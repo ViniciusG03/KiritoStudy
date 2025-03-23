@@ -5,43 +5,43 @@ const StudySession = require('../database/models/StudySession');
 const Goal = require('../database/models/Goal');
 
 module.exports = {
-  data: new SlashCommandBuilder()
-    .setName('reports')
-    .setDescription('Gerar relatórios de estudo')
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('daily')
-        .setDescription('Gerar um relatório diário do seu progresso'))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('weekly')
-        .setDescription('Gerar um relatório semanal do seu progresso'))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('monthly')
-        .setDescription('Gerar um relatório mensal do seu progresso'))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('setup')
-        .setDescription('Configurar relatórios automáticos')
-        .addChannelOption(option =>
-          option.setName('channel')
-            .setDescription('Canal para enviar relatórios automáticos')
-            .setRequired(true))
-        .addStringOption(option =>
-          option.setName('type')
-            .setDescription('Tipo de relatório automático')
-            .setRequired(true)
-            .addChoices(
-              { name: 'Diário', value: 'daily' },
-              { name: 'Semanal', value: 'weekly' },
-              { name: 'Mensal', value: 'monthly' }
-            ))
-        .addBooleanOption(option =>
-          option.setName('enabled')
-            .setDescription('Ativar ou desativar')
-            .setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)),
+    data: new SlashCommandBuilder()
+      .setName('reports')
+      .setDescription('Gerar relatórios de estudo')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild) // Movido para aqui
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('daily')
+          .setDescription('Gerar um relatório diário do seu progresso'))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('weekly')
+          .setDescription('Gerar um relatório semanal do seu progresso'))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('monthly')
+          .setDescription('Gerar um relatório mensal do seu progresso'))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('setup')
+          .setDescription('Configurar relatórios automáticos')
+          .addChannelOption(option =>
+            option.setName('channel')
+              .setDescription('Canal para enviar relatórios automáticos')
+              .setRequired(true))
+          .addStringOption(option =>
+            option.setName('type')
+              .setDescription('Tipo de relatório automático')
+              .setRequired(true)
+              .addChoices(
+                { name: 'Diário', value: 'daily' },
+                { name: 'Semanal', value: 'weekly' },
+                { name: 'Mensal', value: 'monthly' }
+              ))
+          .addBooleanOption(option =>
+            option.setName('enabled')
+              .setDescription('Ativar ou desativar')
+              .setRequired(true))),
   
   async execute(interaction) {
     await interaction.deferReply();

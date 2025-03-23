@@ -187,24 +187,24 @@ module.exports = {
           const filter = interaction.options.getString('filter') || 'active';
           
           let query = { userId: userId };
-          let title = '';
+          let listTitle = '';
           
           switch (filter) {
             case 'all':
-              title = '📋 Todas as Metas';
+              listTitle = '📋 Todas as Metas';
               break;
             case 'active':
               query.completed = false;
-              title = '🔄 Metas Ativas';
+              listTitle = '🔄 Metas Ativas';
               break;
             case 'completed':
               query.completed = true;
-              title = '✅ Metas Concluídas';
+              listTitle = '✅ Metas Concluídas';
               break;
             case 'overdue':
               query.completed = false;
               query.deadline = { $lt: new Date(), $ne: null };
-              title = '⏰ Metas Vencidas';
+              listTitle = '⏰ Metas Vencidas';
               break;
           }
           
@@ -216,7 +216,7 @@ module.exports = {
           }
           
           const listEmbed = new EmbedBuilder()
-            .setTitle(title)
+            .setTitle(listTitle)
             .setDescription(`Você tem ${goals.length} meta(s) ${filter === 'all' ? '' : filter}:`)
             .setColor('#3498db');
           

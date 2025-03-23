@@ -63,7 +63,8 @@ class PomodoroManager {
       timer: null,
       startTime: new Date(),
       endTime: null,
-      timeLeft: this.pomodoro.workTime
+      timeLeft: this.pomodoro.workTime / 1000, // Convertendo para segundos para exibição
+      paused: false
     };
     
     // Iniciar o primeiro timer de trabalho
@@ -112,7 +113,7 @@ class PomodoroManager {
         break;
     }
     
-    state.timeLeft = duration;
+    state.timeLeft = duration / 1000; // Convertendo para segundos para facilitar a exibição
     
     // Limpar timer anterior se existir
     if (state.timer) {
@@ -123,7 +124,7 @@ class PomodoroManager {
     const startTime = Date.now();
     state.timer = setInterval(async () => {
       const elapsed = Date.now() - startTime;
-      state.timeLeft = duration - elapsed;
+      state.timeLeft = Math.max(0, duration - elapsed) / 1000;
       
       // Verificar se o timer acabou
       if (state.timeLeft <= 0) {
@@ -246,6 +247,13 @@ class PomodoroManager {
       };
     }
     
+    if (session.paused) {
+      return {
+        success: false,
+        message: 'Sua sessão já está pausada!'
+      };
+    }
+    
     clearInterval(session.timer);
     session.timer = null;
     session.paused = true;
@@ -255,7 +263,7 @@ class PomodoroManager {
       .setDescription(`Sua sessão de pomodoro foi pausada. Use /pomodoro resume para continuar.`)
       .setColor('#FFA500')
       .addFields(
-        { name: 'Tempo Restante', value: `${Math.ceil(session.timeLeft / 60000)} minutos`, inline: true },
+        { name: 'Tempo Restante', value: `${Math.ceil(session.timeLeft / 60)} minutos`, inline: true },
         { name: 'Status', value: session.status === 'work' ? 'Trabalhando (Pausado)' : 'Pausa (Pausado)', inline: true }
       );
     
@@ -266,7 +274,7 @@ class PomodoroManager {
       message: 'Sessão de pomodoro pausada com sucesso!'
     };
   }
-  
+
   /**
    * Retoma a sessão de pomodoro
    * @param {string} userId - ID do usuário
@@ -291,10 +299,11 @@ class PomodoroManager {
     session.paused = false;
     
     // Continuar o timer de onde parou
+    const remainingTime = session.timeLeft * 1000; // Converter de volta para ms
     const startTime = Date.now();
     session.timer = setInterval(async () => {
       const elapsed = Date.now() - startTime;
-      session.timeLeft -= elapsed;
+      session.timeLeft = Math.max(0, (remainingTime - elapsed) / 1000);
       
       if (session.timeLeft <= 0) {
         clearInterval(session.timer);
@@ -307,8 +316,179 @@ class PomodoroManager {
       .setDescription(`Sua sessão de pomodoro foi retomada.`)
       .setColor('#32CD32')
       .addFields(
-        { name: 'Tempo Restante', value: `${Math.ceil(session.timeLeft / 60000)} minutos`, inline: true },
+        { name: 'Tempo Restante', value: `${Math.ceil(session.timeLeft / 60)} minutos`, inline: true },
         { name: 'Status', value: session.status === 'work' ? 'Trabalhando 💪' : 'Em Pausa 🧘', inline: true }
       );
+    
+    await session.channel.send({ embeds: [embed] });
+    
+    return {
+      success: true,
+      message: 'Sessão de pomodoro retomada com sucesso!'
+    };
+  }
+  
+  /**
+   * Encerra a sessão de pomodoro
+   * @param {string} userId - ID do usuário
+   */
+  async stopPomodoro(userId) {
+    const session = activeSessions.get(userId);
+    
+    if (!session) {
+      return {
+        success: false,
+        message: 'Você não tem uma sessão de pomodoro ativa!'
+      };
+    }
+    
+    // Limpar timer
+    if (session.timer) {
+      clearInterval(session.timer);
+      session.timer = null;
+    }
+    
+    // Calcular duração efetiva
+    const now = new Date();
+    const duration = Math.floor((now - session.startTime) / 60000); // Converter para minutos
+    
+    // Atualizar sessão de estudo
+    try {
+      await StudySession.findByIdAndUpdate(session.sessionId, {
+        endTime: now,
+        duration: duration,
+        completed: true,
+        pomodorosCompleted: session.pomodorosCompleted
+      });
+      
+      // Atualizar usuário
+      const user = await User.findOne({ discordId: session.userId });
+      if (user) {
+        user.totalStudyTime += duration;
+        user.totalSessions += 1;
+        user.completedPomodoros += session.pomodorosCompleted;
+        
+        // Atualizar streak
+        user.updateStreak();
+        
+        // Dar XP pela sessão completa
+        const xpGained = Math.min(100, duration); // Limitar a 100 XP
+        let leveledUp = false;
+        
+        if (user.addXP) {
+          leveledUp = await user.addXP(xpGained, config.levels);
+        } else {
+          // Método alternativo caso o método addXP não exista
+          user.xp += xpGained;
+          if (user.xp >= user.xpToNextLevel) {
+            user.level += 1;
+            user.xp -= user.xpToNextLevel;
+            user.xpToNextLevel = Math.floor(config.levels.baseXP * Math.pow(config.levels.growthFactor, user.level - 1));
+            leveledUp = true;
+          }
+        }
+        
+        await user.save();
+        
+        // Atualizar meta se houver
+        if (session.goalId) {
+          const goal = await Goal.findById(session.goalId);
+          if (goal) {
+            goal.addTime(duration);
+            await goal.save();
+          }
+        }
+        
+        // Enviar mensagem de conclusão
+        const completionEmbed = new EmbedBuilder()
+          .setTitle('✅ Sessão Pomodoro Concluída')
+          .setDescription(`${session.username} encerrou a sessão de pomodoro!`)
+          .setColor('#2ecc71')
+          .addFields(
+            { name: 'Assunto', value: session.subject, inline: true },
+            { name: 'Pomodoros Completos', value: `${session.pomodorosCompleted}`, inline: true },
+            { name: 'Duração Total', value: `${duration} minutos`, inline: true },
+            { name: 'XP Ganho', value: `${xpGained}`, inline: true }
+          );
+        
+        if (leveledUp) {
+          completionEmbed.addFields({
+            name: '🎉 Subiu de Nível!',
+            value: `${session.username} alcançou o nível ${user.level}!`
+          });
+        }
+        
+        await session.channel.send({ embeds: [completionEmbed] });
+        
+        // Remover da lista de sessões ativas
+        activeSessions.delete(userId);
+        
+        return {
+          success: true,
+          message: 'Sessão de pomodoro encerrada com sucesso!'
+        };
+      } else {
+        console.error("Usuário não encontrado ao encerrar sessão de pomodoro");
+        return { 
+          success: false, 
+          message: "Erro ao encerrar sessão: usuário não encontrado"
+        };
+      }
+    } catch (error) {
+      console.error('Erro ao encerrar sessão de pomodoro:', error);
+      return {
+        success: false,
+        message: 'Ocorreu um erro ao encerrar a sessão de pomodoro.'
+      };
+    }
+  }
+  
+  /**
+   * Obtém a sessão ativa de um usuário
+   * @param {string} userId - ID do usuário
+   * @returns {object|null} Sessão ativa ou null se não existir
+   */
+  getActiveSession(userId) {
+    const session = activeSessions.get(userId);
+    if (!session) return null;
+    
+    // Calcular minutos restantes para exibição
+    const timeLeftMinutes = Math.ceil(session.timeLeft / 60);
+    
+    return {
+      userId: session.userId,
+      username: session.username,
+      subject: session.subject,
+      status: session.status,
+      pomodorosCompleted: session.pomodorosCompleted,
+      currentCycle: session.currentCycle,
+      paused: session.paused,
+      startTime: session.startTime,
+      timeLeft: timeLeftMinutes
+    };
+  }
+  
+  /**
+   * Obtém todas as sessões de pomodoro ativas
+   * @returns {Array} Array de sessões ativas
+   */
+  getAllActiveSessions() {
+    const sessions = [];
+    
+    activeSessions.forEach((session, userId) => {
+      sessions.push({
+        userId: userId,
+        username: session.username,
+        subject: session.subject,
+        status: session.status,
+        pomodorosCompleted: session.pomodorosCompleted,
+        paused: session.paused
+      });
+    });
+    
+    return sessions;
   }
 }
+
+// Exportar uma instância única
+module.exports = new PomodoroManager();
