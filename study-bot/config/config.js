@@ -1,9 +1,9 @@
 // config/config.js
 module.exports = {
-    token:"MTM1MzE3ODg3OTU3NzE2MTczNg.GRm9dk.kU34qahkMGu_PkqhpkWlASS0wXHS671_tESrEw",
-    clientId:"1353178879577161736",
-    guildId:"",
-    mongoURI:"https://discord.com/oauth2/authorize?client_id=1353178879577161736&permissions=8&integration_type=0&scope=applications.commands+bot",
+    token: process.env.DISCORD_TOKEN, // Use variável de ambiente em vez do token direto
+    clientId: process.env.CLIENT_ID,  // Use variável de ambiente
+    guildId: process.env.GUILD_ID,    // Use variável de ambiente
+    mongoURI: process.env.MONGODB_URI,
     
     // Configurações do Pomodoro
     pomodoro: {
