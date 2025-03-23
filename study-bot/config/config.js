@@ -1,8 +1,10 @@
 // config/config.js
+require('dotenv').config();
+
 module.exports = {
-    token: process.env.DISCORD_TOKEN, // Use variável de ambiente em vez do token direto
-    clientId: process.env.CLIENT_ID,  // Use variável de ambiente
-    guildId: process.env.GUILD_ID,    // Use variável de ambiente
+    token: process.env.DISCORD_TOKEN, 
+    clientId: process.env.CLIENT_ID,
+    guildId: process.env.GUILD_ID,
     mongoURI: process.env.MONGODB_URI,
     
     // Configurações do Pomodoro
@@ -26,4 +28,4 @@ module.exports = {
       dailyTime: '20:00',           // Hora para enviar relatórios diários (UTC)
       weeklyDay: 0                  // Dia da semana para relatórios semanais (0 = Domingo)
     }
-  };
+};
