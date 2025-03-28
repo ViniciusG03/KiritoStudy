@@ -3,14 +3,201 @@ const { EmbedBuilder } = require("discord.js");
 const User = require("../database/models/User");
 const StudySession = require("../database/models/StudySession");
 const Goal = require("../database/models/Goal");
+const ActiveSession = require("../database/models/ActiveSession"); // Novo modelo
 const config = require("../config/config");
 
-// Mapa para armazenar as sessões ativas
-const activeSessions = new Map();
+// Cache local para armazenar as sessões ativas (para desempenho)
+const memoryCache = new Map();
 
 class PomodoroManager {
   constructor() {
     this.pomodoro = config.pomodoro;
+  }
+
+  /**
+   * Carrega sessões ativas do banco de dados (após reinício do bot)
+   * @returns {Promise<void>}
+   */
+  async loadActiveSessions() {
+    try {
+      console.log("Carregando sessões de pomodoro ativas do banco de dados...");
+      const activeSessions = await ActiveSession.find({
+        sessionType: "pomodoro",
+      });
+
+      if (activeSessions.length === 0) {
+        console.log(
+          "Nenhuma sessão de pomodoro ativa encontrada no banco de dados."
+        );
+        return;
+      }
+
+      console.log(
+        `Encontradas ${activeSessions.length} sessões de pomodoro ativas.`
+      );
+
+      // Reconstruir sessões em memória e reiniciar timers
+      for (const dbSession of activeSessions) {
+        try {
+          // Recuperar informações complementares
+          const studySession = await StudySession.findById(
+            dbSession.studySessionId
+          );
+          if (!studySession) {
+            console.log(
+              `Sessão de estudo ${dbSession.studySessionId} não encontrada. Removendo sessão ativa.`
+            );
+            await ActiveSession.findByIdAndRemove(dbSession._id);
+            continue;
+          }
+
+          // Calcular tempo restante ajustado
+          const now = new Date();
+          let timeLeftMs = dbSession.timeLeft;
+
+          // Se estiver pausado, o tempo permanece o mesmo
+          // Se não estiver pausado, ajustar o tempo com base no tempo passado desde a última atualização
+          if (!dbSession.paused && dbSession.lastUpdated) {
+            const elapsedSinceUpdate = now - dbSession.lastUpdated;
+            timeLeftMs = Math.max(0, timeLeftMs - elapsedSinceUpdate);
+          }
+
+          // Criar objeto de estado na memória
+          const sessionState = {
+            sessionId: studySession._id,
+            activeSessionId: dbSession._id,
+            userId: dbSession.userId,
+            username: dbSession.metadata?.username || "Usuário",
+            serverChannelId: dbSession.metadata?.serverChannelId,
+            dmChannelId: dbSession.metadata?.dmChannelId,
+            subject: dbSession.subject,
+            goalId: dbSession.goalId,
+            currentCycle: dbSession.currentCycle,
+            status: dbSession.status,
+            pomodorosCompleted: dbSession.pomodorosCompleted,
+            timer: null,
+            startTime: dbSession.startTime,
+            timeLeft: timeLeftMs / 60000, // Converter para minutos
+            paused: dbSession.paused,
+            pendingRestore: true, // Marcar para restauração completa quando o client estiver disponível
+          };
+
+          // Adicionar ao cache em memória
+          memoryCache.set(dbSession.userId, sessionState);
+
+          console.log(
+            `Restaurada sessão para usuário ${dbSession.userId} (${sessionState.username})`
+          );
+        } catch (err) {
+          console.error(`Erro ao restaurar sessão ${dbSession._id}:`, err);
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao carregar sessões ativas:", error);
+    }
+  }
+
+  /**
+   * Completa a restauração das sessões quando o client está disponível
+   * @param {Object} client - Cliente Discord.js
+   * @returns {Promise<void>}
+   */
+  async completeSessionsRestore(client) {
+    for (const [userId, state] of memoryCache.entries()) {
+      if (state.pendingRestore) {
+        try {
+          // Buscar canais
+          let dmChannel;
+          try {
+            const user = await client.users.fetch(userId);
+            if (user) {
+              dmChannel = await user.createDM();
+            }
+          } catch (err) {
+            console.warn(
+              `Não foi possível criar canal DM para usuário ${userId}:`,
+              err.message
+            );
+          }
+
+          let serverChannel;
+          if (state.serverChannelId) {
+            try {
+              serverChannel = await client.channels.fetch(
+                state.serverChannelId
+              );
+            } catch (err) {
+              console.warn(
+                `Não foi possível buscar canal do servidor ${state.serverChannelId}:`,
+                err.message
+              );
+            }
+          }
+
+          // Atualizar estado com canais
+          state.dmChannel = dmChannel;
+          state.serverChannel = serverChannel;
+
+          // Reiniciar timer se a sessão não estiver pausada
+          if (!state.paused && state.timeLeft > 0) {
+            this._startTimer(state);
+
+            // Notificar usuário que sessão foi restaurada
+            if (dmChannel) {
+              const embed = new EmbedBuilder()
+                .setTitle("🔄 Sessão Pomodoro Restaurada")
+                .setDescription(
+                  "O bot foi reiniciado, mas sua sessão foi restaurada automaticamente."
+                )
+                .setColor("#3498db")
+                .addFields(
+                  {
+                    name: "Status",
+                    value:
+                      state.status === "work"
+                        ? "Trabalhando 💪"
+                        : state.status === "shortBreak"
+                        ? "Pausa Curta ☕"
+                        : "Pausa Longa 🧘",
+                    inline: true,
+                  },
+                  {
+                    name: "Tempo Restante",
+                    value: `${Math.ceil(state.timeLeft)} minutos`,
+                    inline: true,
+                  },
+                  {
+                    name: "Pomodoros Completos",
+                    value: `${state.pomodorosCompleted}`,
+                    inline: true,
+                  }
+                );
+
+              await dmChannel
+                .send({ embeds: [embed] })
+                .catch((err) =>
+                  console.warn(
+                    `Erro ao enviar mensagem de restauração para ${userId}:`,
+                    err.message
+                  )
+                );
+            }
+          }
+
+          // Remover flag de pendência
+          state.pendingRestore = false;
+
+          console.log(
+            `Restauração de sessão finalizada para usuário ${userId}`
+          );
+        } catch (err) {
+          console.error(
+            `Erro ao completar restauração para usuário ${userId}:`,
+            err
+          );
+        }
+      }
+    }
   }
 
   /**
@@ -30,12 +217,23 @@ class PomodoroManager {
     subject = "Geral",
     goalId = null
   ) {
-    // Verificar se já existe uma sessão ativa
-    if (activeSessions.has(userId)) {
+    // Verificar se já existe uma sessão ativa no banco de dados ou cache
+    if (memoryCache.has(userId)) {
       return {
         success: false,
         message: "Você já tem uma sessão de estudo ativa!",
       };
+    }
+
+    const existingSession = await ActiveSession.findOne({
+      userId: userId,
+      sessionType: "pomodoro",
+    });
+
+    if (existingSession) {
+      // Se encontrou no banco mas não no cache, remover do banco (sessão órfã)
+      await ActiveSession.findByIdAndRemove(existingSession._id);
+      console.log(`Removida sessão órfã para usuário ${userId}`);
     }
 
     // Obter ou criar usuário
@@ -49,21 +247,45 @@ class PomodoroManager {
     }
 
     // Criar nova sessão de estudo
-    const session = new StudySession({
+    const studySession = new StudySession({
       userId: userId,
       startTime: new Date(),
       type: "pomodoro",
       subject: subject,
     });
-    await session.save();
+    await studySession.save();
 
-    // Configuração do pomodoro
+    // Salvar metadados úteis para restauração
+    const sessionMetadata = {
+      username: username,
+      serverChannelId: serverChannel?.id,
+      dmChannelId: dmChannel?.id,
+    };
+
+    // Criar sessão ativa no banco de dados
+    const activeSession = new ActiveSession({
+      userId: userId,
+      sessionType: "pomodoro",
+      studySessionId: studySession._id,
+      subject: subject,
+      startTime: new Date(),
+      status: "work",
+      timeLeft: this.pomodoro.workTime,
+      goalId: goalId,
+      metadata: sessionMetadata,
+      lastUpdated: new Date(),
+    });
+
+    await activeSession.save();
+
+    // Configuração do pomodoro em memória
     const pomodoroState = {
-      sessionId: session._id,
+      sessionId: studySession._id,
+      activeSessionId: activeSession._id,
       userId: userId,
       username: username,
-      serverChannel: serverChannel, // Canal onde o comando foi executado
-      dmChannel: dmChannel, // Canal de DM para notificações
+      serverChannel: serverChannel,
+      dmChannel: dmChannel,
       subject: subject,
       goalId: goalId,
       currentCycle: 1,
@@ -79,8 +301,8 @@ class PomodoroManager {
     // Iniciar o primeiro timer de trabalho
     this._startTimer(pomodoroState);
 
-    // Adicionar à lista de sessões ativas
-    activeSessions.set(userId, pomodoroState);
+    // Adicionar à cache em memória
+    memoryCache.set(userId, pomodoroState);
 
     // Enviar mensagem inicial
     const embed = new EmbedBuilder()
@@ -123,13 +345,13 @@ class PomodoroManager {
 
     return {
       success: true,
-      sessionId: session._id,
+      sessionId: studySession._id,
       message: "Sessão de pomodoro iniciada com sucesso!",
     };
   }
 
   /**
-   * Inicia o timer para o estado atual
+   * Inicia o timer para o estado atual e atualiza o banco de dados
    * @param {object} state - Estado do pomodoro
    */
   _startTimer(state) {
@@ -154,11 +376,23 @@ class PomodoroManager {
       clearInterval(state.timer);
     }
 
+    // Atualizar no banco de dados
+    this._updateSessionState(state).catch((err) =>
+      console.error("Erro ao atualizar estado da sessão:", err)
+    );
+
     // Iniciar novo timer
     const startTime = Date.now();
     state.timer = setInterval(async () => {
       const elapsed = Date.now() - startTime;
       state.timeLeft = Math.max(0, (duration - elapsed) / 60000);
+
+      // Atualizar banco de dados periodicamente (a cada 30 segundos)
+      if (elapsed % 30000 < 1000) {
+        await this._updateSessionState(state).catch((err) =>
+          console.error("Erro ao atualizar estado da sessão:", err)
+        );
+      }
 
       // Verificar se o timer acabou
       if (state.timeLeft <= 0) {
@@ -166,6 +400,28 @@ class PomodoroManager {
         await this._handleTimerEnd(state);
       }
     }, 1000);
+  }
+
+  /**
+   * Atualiza o estado da sessão no banco de dados
+   * @param {object} state - Estado do pomodoro
+   * @returns {Promise<void>}
+   */
+  async _updateSessionState(state) {
+    try {
+      await ActiveSession.findByIdAndUpdate(state.activeSessionId, {
+        status: state.status,
+        timeLeft: state.timeLeft * 60000, // Converter minutos para ms
+        currentCycle: state.currentCycle,
+        pomodorosCompleted: state.pomodorosCompleted,
+        paused: state.paused,
+        pausedAt: state.paused ? new Date() : null,
+        lastUpdated: new Date(),
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar sessão no banco de dados:", error);
+      throw error;
+    }
   }
 
   /**
@@ -301,6 +557,9 @@ class PomodoroManager {
           break;
       }
 
+      // Atualizar banco de dados
+      await this._updateSessionState(state);
+
       // Iniciar próximo timer
       this._startTimer(state);
     } catch (error) {
@@ -331,7 +590,7 @@ class PomodoroManager {
    * @param {string} userId - ID do usuário
    */
   async pausePomodoro(userId) {
-    const session = activeSessions.get(userId);
+    const session = memoryCache.get(userId);
 
     if (!session) {
       return {
@@ -350,6 +609,9 @@ class PomodoroManager {
     clearInterval(session.timer);
     session.timer = null;
     session.paused = true;
+
+    // Atualizar no banco de dados
+    await this._updateSessionState(session);
 
     const embed = new EmbedBuilder()
       .setTitle("⏸️ Pomodoro Pausado")
@@ -386,7 +648,7 @@ class PomodoroManager {
    * @param {string} userId - ID do usuário
    */
   async resumePomodoro(userId) {
-    const session = activeSessions.get(userId);
+    const session = memoryCache.get(userId);
 
     if (!session) {
       return {
@@ -404,12 +666,22 @@ class PomodoroManager {
 
     session.paused = false;
 
+    // Atualizar no banco de dados
+    await this._updateSessionState(session);
+
     // Continuar o timer de onde parou
     const remainingTime = session.timeLeft * 60000; // Converter para ms
     const startTime = Date.now();
     session.timer = setInterval(async () => {
       const elapsed = Date.now() - startTime;
       session.timeLeft = Math.max(0, (remainingTime - elapsed) / 60000);
+
+      // Atualizar banco de dados periodicamente (a cada 30 segundos)
+      if (elapsed % 30000 < 1000) {
+        await this._updateSessionState(session).catch((err) =>
+          console.error("Erro ao atualizar estado da sessão:", err)
+        );
+      }
 
       if (session.timeLeft <= 0) {
         clearInterval(session.timer);
@@ -447,7 +719,7 @@ class PomodoroManager {
    * @param {string} userId - ID do usuário
    */
   async stopPomodoro(userId) {
-    const session = activeSessions.get(userId);
+    const session = memoryCache.get(userId);
 
     if (!session) {
       return {
@@ -466,8 +738,11 @@ class PomodoroManager {
     const now = new Date();
     const duration = Math.floor((now - session.startTime) / 60000); // Converter para minutos
 
-    // Atualizar sessão de estudo
     try {
+      // Remover do banco de dados
+      await ActiveSession.findByIdAndRemove(session.activeSessionId);
+
+      // Atualizar sessão de estudo
       await StudySession.findByIdAndUpdate(session.sessionId, {
         endTime: now,
         duration: duration,
@@ -548,7 +823,7 @@ class PomodoroManager {
         });
 
         // Remover da lista de sessões ativas
-        activeSessions.delete(userId);
+        memoryCache.delete(userId);
 
         return {
           success: true,
@@ -569,7 +844,7 @@ class PomodoroManager {
       };
     } finally {
       // Garantir que o usuário seja removido da lista mesmo se houver erros
-      activeSessions.delete(userId);
+      memoryCache.delete(userId);
     }
   }
 
@@ -579,7 +854,7 @@ class PomodoroManager {
    * @returns {object|null} Sessão ativa ou null se não existir
    */
   getActiveSession(userId) {
-    const session = activeSessions.get(userId);
+    const session = memoryCache.get(userId);
     if (!session) return null;
 
     // Calcular minutos restantes para exibição
@@ -605,7 +880,7 @@ class PomodoroManager {
   getAllActiveSessions() {
     const sessions = [];
 
-    activeSessions.forEach((session, userId) => {
+    memoryCache.forEach((session, userId) => {
       sessions.push({
         userId: userId,
         username: session.username,
@@ -618,6 +893,30 @@ class PomodoroManager {
     });
 
     return sessions;
+  }
+
+  /**
+   * Limpa sessões órfãs ou expiradas do banco de dados
+   * @returns {Promise<number>} Número de sessões removidas
+   */
+  async cleanOrphanedSessions() {
+    try {
+      // Remover sessões mais antigas que 12 horas
+      const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
+
+      const result = await ActiveSession.deleteMany({
+        sessionType: "pomodoro",
+        lastUpdated: { $lt: cutoff },
+      });
+
+      console.log(
+        `Limpeza de sessões: ${result.deletedCount} sessões antigas removidas`
+      );
+      return result.deletedCount;
+    } catch (error) {
+      console.error("Erro ao limpar sessões órfãs:", error);
+      return 0;
+    }
   }
 }
 
