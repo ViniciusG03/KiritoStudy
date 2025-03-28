@@ -16,7 +16,7 @@ const discordMocks = {
               setRequired: jest.fn().mockReturnThis(),
             };
             fn(optionMock);
-            return subcommandMock; // Retorna subcommand para encadeamento
+            return subcommandMock; // Returns subcommand for chaining
           }),
           addStringOption: jest.fn().mockImplementation((fn) => {
             const optionMock = {
@@ -26,7 +26,7 @@ const discordMocks = {
               addChoices: jest.fn().mockReturnThis(),
             };
             fn(optionMock);
-            return subcommandMock; // Retorna subcommand para encadeamento
+            return subcommandMock; // Returns subcommand for chaining
           }),
           addBooleanOption: jest.fn().mockImplementation((fn) => {
             const optionMock = {
@@ -35,7 +35,7 @@ const discordMocks = {
               setRequired: jest.fn().mockReturnThis(),
             };
             fn(optionMock);
-            return subcommandMock; // Retorna subcommand para encadeamento
+            return subcommandMock; // Returns subcommand for chaining
           }),
           addChannelOption: jest.fn().mockImplementation((fn) => {
             const optionMock = {
@@ -44,24 +44,56 @@ const discordMocks = {
               setRequired: jest.fn().mockReturnThis(),
             };
             fn(optionMock);
-            return subcommandMock; // Retorna subcommand para encadeamento
+            return subcommandMock; // Returns subcommand for chaining
           }),
         };
         fn(subcommandMock);
-        return builderMock; // Retorna builder para encadeamento
+        return builderMock; // Returns builder for chaining
       }),
     };
     return builderMock;
   }),
 
-  EmbedBuilder: jest.fn().mockImplementation(() => ({
-    setTitle: jest.fn().mockReturnThis(),
-    setDescription: jest.fn().mockReturnThis(),
-    setColor: jest.fn().mockReturnThis(),
-    addFields: jest.fn().mockReturnThis(),
-    setFooter: jest.fn().mockReturnThis(),
-    setTimestamp: jest.fn().mockReturnThis(),
-  })),
+  // Enhanced EmbedBuilder mock that returns real data
+  EmbedBuilder: jest.fn().mockImplementation(() => {
+    const embedData = {
+      title: "",
+      description: "",
+      color: "",
+      fields: [],
+      footer: null,
+      timestamp: null,
+    };
+
+    return {
+      setTitle: jest.fn((title) => {
+        embedData.title = title;
+        return this;
+      }),
+      setDescription: jest.fn((desc) => {
+        embedData.description = desc;
+        return this;
+      }),
+      setColor: jest.fn((color) => {
+        embedData.color = color;
+        return this;
+      }),
+      addFields: jest.fn((...fields) => {
+        embedData.fields = embedData.fields.concat(fields.flat());
+        return this;
+      }),
+      setFooter: jest.fn((footer) => {
+        embedData.footer = footer;
+        return this;
+      }),
+      setTimestamp: jest.fn(() => {
+        embedData.timestamp = new Date();
+        return this;
+      }),
+      // This method ensures the data is returned when the object is serialized
+      toJSON: () => embedData,
+    };
+  }),
 
   PermissionFlagsBits: {
     ManageGuild: 0x20,

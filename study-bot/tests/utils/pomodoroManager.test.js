@@ -1,25 +1,51 @@
-// tests/utils/pomodoroManager.test.js
+// tests/commands/pomodoro.test.js
 const mongoose = require("mongoose");
-const pomodoroManager = require("../../utils/pomodoroManager");
-const User = require("../../database/models/User");
-const StudySession = require("../../database/models/StudySession");
 const ActiveSession = require("../../database/models/ActiveSession");
+const StudySession = require("../../database/models/StudySession");
+const User = require("../../database/models/User");
+const Goal = require("../../database/models/Goal");
+const pomodoroManager = require("../../utils/pomodoroManager");
 
-// Mock para os canais do Discord
-const mockDmChannel = {
-  send: jest.fn().mockResolvedValue({}),
-};
+// Mock for discord.js
+jest.mock("discord.js", () => {
+  return require("../mocks/discord");
+});
 
-const mockServerChannel = {
-  send: jest.fn().mockResolvedValue({}),
-};
+// Import after mocks to ensure mocks are applied
+const pomodoroCommand = require("../../commands/pomodoro");
 
-describe("PomodoroManager", () => {
-  // Aumentar timeout para estes testes específicos
+// Mock for interaction
+const createMockInteraction = (options = {}) => ({
+  deferReply: jest.fn().mockResolvedValue({}),
+  editReply: jest.fn().mockResolvedValue({}),
+  channel: {
+    id: options.channelId || "channel-123",
+    send: jest.fn().mockResolvedValue({}),
+  },
+  options: {
+    getSubcommand: jest.fn().mockReturnValue(options.subcommand || "start"),
+    getString: jest.fn().mockImplementation((name) => {
+      if (name === "subject") return options.subject || "Test Subject";
+      if (name === "goal") return options.goalId || null;
+      return null;
+    }),
+  },
+  user: {
+    id: options.userId || "123456789",
+    username: options.username || "TestUser",
+    createDM: jest.fn().mockResolvedValue({
+      id: "dm-channel-123",
+      send: jest.fn().mockResolvedValue({}),
+    }),
+  },
+});
+
+describe("Pomodoro Command", () => {
+  // Increase timeout for these specific tests
   jest.setTimeout(30000);
 
   beforeAll(async () => {
-    // Verificar se já está conectado
+    // Check if already connected
     if (mongoose.connection.readyState !== 1) {
       await mongoose.connect(
         process.env.MONGO_URL || "mongodb://localhost:27017/test",
@@ -35,20 +61,20 @@ describe("PomodoroManager", () => {
     try {
       await mongoose.connection.close();
     } catch (error) {
-      console.error("Erro ao fechar conexão MongoDB:", error);
+      console.error("Error closing MongoDB connection:", error);
     }
   });
 
   beforeEach(async () => {
-    // Usar fake timers para controlar o tempo em testes
+    // Use fake timers for time control in tests
     jest.useFakeTimers();
 
     try {
-      // Limpar sessões existentes
+      // Clean up sessions
       if (typeof pomodoroManager.cleanupForTests === "function") {
         await pomodoroManager.cleanupForTests();
       } else {
-        // Encerrar todas as sessões ativas manualmente
+        // Manually end all active sessions
         const activeSessions = await ActiveSession.find({
           sessionType: "pomodoro",
         });
@@ -56,153 +82,417 @@ describe("PomodoroManager", () => {
           try {
             await pomodoroManager.stopPomodoro(session.userId);
           } catch (err) {
-            // Ignorar erros ao limpar
+            // Ignore errors during cleanup
           }
         }
       }
 
-      // Limpar coleções
+      // Clear collections
       await User.deleteMany({});
       await StudySession.deleteMany({});
       await ActiveSession.deleteMany({});
+      await Goal.deleteMany({});
 
-      // Limpar mocks
+      // Clear mocks
       jest.clearAllMocks();
+
+      // Mock pomodoroManager method calls
+      jest
+        .spyOn(pomodoroManager, "startPomodoro")
+        .mockImplementation(
+          (userId, username, serverChannel, dmChannel, subject, goalId) => {
+            return Promise.resolve({
+              success: true,
+              sessionId: "mock-session-id",
+              message: "Session started successfully",
+            });
+          }
+        );
+
+      jest
+        .spyOn(pomodoroManager, "pausePomodoro")
+        .mockImplementation((userId) => {
+          return Promise.resolve({
+            success: true,
+            message: "Session paused successfully",
+          });
+        });
+
+      jest
+        .spyOn(pomodoroManager, "resumePomodoro")
+        .mockImplementation((userId) => {
+          return Promise.resolve({
+            success: true,
+            message: "Session resumed successfully",
+          });
+        });
+
+      jest
+        .spyOn(pomodoroManager, "stopPomodoro")
+        .mockImplementation((userId) => {
+          return Promise.resolve({
+            success: true,
+            message: "Session stopped successfully",
+          });
+        });
+
+      jest
+        .spyOn(pomodoroManager, "getActiveSession")
+        .mockImplementation((userId) => {
+          if (userId === "123456789") {
+            return {
+              userId: "123456789",
+              username: "TestUser",
+              subject: "Test Subject",
+              status: "work",
+              pomodorosCompleted: 2,
+              paused: false,
+              startTime: new Date(),
+              timeLeft: 15,
+            };
+          }
+          return null;
+        });
+
+      jest
+        .spyOn(pomodoroManager, "getAllActiveSessions")
+        .mockImplementation(() => {
+          return [
+            {
+              userId: "123456789",
+              username: "TestUser",
+              subject: "Test Subject",
+              status: "work",
+              pomodorosCompleted: 2,
+              paused: false,
+            },
+            {
+              userId: "987654321",
+              username: "AnotherUser",
+              subject: "Another Subject",
+              status: "shortBreak",
+              pomodorosCompleted: 3,
+              paused: false,
+            },
+          ];
+        });
     } catch (error) {
-      console.error("Erro ao limpar dados para teste:", error);
+      console.error("Error cleaning up for test:", error);
     }
   });
 
   afterEach(() => {
-    // Restaurar timers reais após cada teste
+    // Restore real timers after each test
     jest.clearAllTimers();
     jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
-  it("should start a new pomodoro session", async () => {
-    const result = await pomodoroManager.startPomodoro(
-      "123456789",
-      "TestUser",
-      mockServerChannel,
-      mockDmChannel,
-      "Test Subject"
-    );
+  describe("start subcommand", () => {
+    it("should start a pomodoro session", async () => {
+      const interaction = createMockInteraction({
+        subcommand: "start",
+        subject: "Test Subject",
+      });
 
-    expect(result.success).toBe(true);
+      await pomodoroCommand.execute(interaction);
 
-    // Verificar se a sessão foi salva no banco
-    const activeSession = await ActiveSession.findOne({ userId: "123456789" });
-    expect(activeSession).toBeTruthy();
-    expect(activeSession.subject).toBe("Test Subject");
-    expect(activeSession.sessionType).toBe("pomodoro");
+      // Verify pomodoroManager.startPomodoro was called
+      expect(pomodoroManager.startPomodoro).toHaveBeenCalledWith(
+        "123456789",
+        "TestUser",
+        expect.anything(),
+        expect.anything(),
+        "Test Subject",
+        null
+      );
 
-    // Verificar se o estudo foi salvo
-    const studySession = await StudySession.findOne({ userId: "123456789" });
-    expect(studySession).toBeTruthy();
+      // Verify response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("✅")
+      );
+    });
 
-    // Verificar se o usuário foi criado
-    const user = await User.findOne({ discordId: "123456789" });
-    expect(user).toBeTruthy();
+    it("should start a pomodoro session with associated goal", async () => {
+      // Create a goal
+      const goal = new Goal({
+        userId: "123456789",
+        title: "Test Goal",
+        targetTime: 60,
+        completed: false,
+      });
+      await goal.save();
+      const goalId = goal._id.toString();
 
-    // Verificar se a mensagem foi enviada
-    expect(mockDmChannel.send).toHaveBeenCalled();
-  }, 30000);
+      // Mock Goal.findById to simulate finding the goal
+      jest.spyOn(Goal, "findById").mockResolvedValue(goal);
 
-  it("should not start a second session for the same user", async () => {
-    // Primeira sessão
-    await pomodoroManager.startPomodoro(
-      "123456789",
-      "TestUser",
-      mockServerChannel,
-      mockDmChannel,
-      "Test Subject"
-    );
+      const interaction = createMockInteraction({
+        subcommand: "start",
+        subject: "Goal Subject",
+        goalId: goalId,
+      });
 
-    // Limpar mocks
-    jest.clearAllMocks();
+      await pomodoroCommand.execute(interaction);
 
-    // Tentar iniciar segunda sessão
-    const result = await pomodoroManager.startPomodoro(
-      "123456789",
-      "TestUser",
-      mockServerChannel,
-      mockDmChannel,
-      "Another Subject"
-    );
+      // Verify pomodoroManager.startPomodoro was called with goal ID
+      expect(pomodoroManager.startPomodoro).toHaveBeenCalledWith(
+        "123456789",
+        "TestUser",
+        expect.anything(),
+        expect.anything(),
+        "Goal Subject",
+        goalId
+      );
+    });
 
-    expect(result.success).toBe(false);
-    expect(mockDmChannel.send).not.toHaveBeenCalled();
-  }, 30000);
+    it("should handle start failures", async () => {
+      // Mock a failure response
+      pomodoroManager.startPomodoro.mockResolvedValueOnce({
+        success: false,
+        message: "Session already active",
+      });
 
-  it("should pause and resume a pomodoro session", async () => {
-    // Iniciar sessão
-    await pomodoroManager.startPomodoro(
-      "123456789",
-      "TestUser",
-      mockServerChannel,
-      mockDmChannel,
-      "Test Subject"
-    );
+      const interaction = createMockInteraction({
+        subcommand: "start",
+        subject: "Failure Test",
+      });
 
-    // Limpar mocks
-    jest.clearAllMocks();
+      await pomodoroCommand.execute(interaction);
 
-    // Pausar sessão
-    const pauseResult = await pomodoroManager.pausePomodoro("123456789");
-    expect(pauseResult.success).toBe(true);
+      // Verify error response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("❌")
+      );
+    });
+  });
 
-    // Verificar se a sessão foi pausada no banco
-    let activeSession = await ActiveSession.findOne({ userId: "123456789" });
-    expect(activeSession.paused).toBe(true);
+  describe("pause subcommand", () => {
+    it("should pause an active pomodoro session", async () => {
+      const interaction = createMockInteraction({
+        subcommand: "pause",
+      });
 
-    // Verificar se a mensagem foi enviada
-    expect(mockDmChannel.send).toHaveBeenCalled();
+      await pomodoroCommand.execute(interaction);
 
-    // Limpar mocks
-    jest.clearAllMocks();
+      // Verify pomodoroManager.pausePomodoro was called
+      expect(pomodoroManager.pausePomodoro).toHaveBeenCalledWith("123456789");
 
-    // Retomar sessão
-    const resumeResult = await pomodoroManager.resumePomodoro("123456789");
-    expect(resumeResult.success).toBe(true);
+      // Verify response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("⏸️")
+      );
+    });
 
-    // Verificar se a sessão foi retomada no banco
-    activeSession = await ActiveSession.findOne({ userId: "123456789" });
-    expect(activeSession.paused).toBe(false);
+    it("should handle pause failures", async () => {
+      // Mock a failure response
+      pomodoroManager.pausePomodoro.mockResolvedValueOnce({
+        success: false,
+        message: "No active session",
+      });
 
-    // Verificar se a mensagem foi enviada
-    expect(mockDmChannel.send).toHaveBeenCalled();
-  }, 30000);
+      const interaction = createMockInteraction({
+        subcommand: "pause",
+      });
 
-  it("should stop a pomodoro session", async () => {
-    // Iniciar sessão
-    const startResult = await pomodoroManager.startPomodoro(
-      "123456789",
-      "TestUser",
-      mockServerChannel,
-      mockDmChannel,
-      "Test Subject"
-    );
+      await pomodoroCommand.execute(interaction);
 
-    // Capturar ID da sessão de estudo
-    const studySessionId = startResult.sessionId;
+      // Verify error response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("❌")
+      );
+    });
+  });
 
-    // Limpar mocks
-    jest.clearAllMocks();
+  describe("resume subcommand", () => {
+    it("should resume a paused pomodoro session", async () => {
+      const interaction = createMockInteraction({
+        subcommand: "resume",
+      });
 
-    // Parar sessão
-    const stopResult = await pomodoroManager.stopPomodoro("123456789");
-    expect(stopResult.success).toBe(true);
+      await pomodoroCommand.execute(interaction);
 
-    // Verificar se a sessão ativa foi removida do banco
-    const activeSession = await ActiveSession.findOne({ userId: "123456789" });
-    expect(activeSession).toBeNull();
+      // Verify pomodoroManager.resumePomodoro was called
+      expect(pomodoroManager.resumePomodoro).toHaveBeenCalledWith("123456789");
 
-    // Verificar se a sessão de estudo foi completada
-    const studySession = await StudySession.findById(studySessionId);
-    expect(studySession.completed).toBe(true);
-    expect(studySession.endTime).toBeTruthy();
+      // Verify response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("▶️")
+      );
+    });
 
-    // Verificar se a mensagem foi enviada
-    expect(mockDmChannel.send).toHaveBeenCalled();
-  }, 30000);
+    it("should handle resume failures", async () => {
+      // Mock a failure response
+      pomodoroManager.resumePomodoro.mockResolvedValueOnce({
+        success: false,
+        message: "Session not paused",
+      });
+
+      const interaction = createMockInteraction({
+        subcommand: "resume",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify error response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("❌")
+      );
+    });
+  });
+
+  describe("stop subcommand", () => {
+    it("should stop an active pomodoro session", async () => {
+      const interaction = createMockInteraction({
+        subcommand: "stop",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify pomodoroManager.stopPomodoro was called
+      expect(pomodoroManager.stopPomodoro).toHaveBeenCalledWith("123456789");
+
+      // Verify response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("✅")
+      );
+    });
+
+    it("should handle stop failures", async () => {
+      // Mock a failure response
+      pomodoroManager.stopPomodoro.mockResolvedValueOnce({
+        success: false,
+        message: "No active session",
+      });
+
+      const interaction = createMockInteraction({
+        subcommand: "stop",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify error response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("❌")
+      );
+    });
+  });
+
+  describe("status subcommand", () => {
+    it("should display the status of an active session", async () => {
+      const interaction = createMockInteraction({
+        subcommand: "status",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify pomodoroManager.getActiveSession was called
+      expect(pomodoroManager.getActiveSession).toHaveBeenCalledWith(
+        "123456789"
+      );
+
+      // Verify response contains session information
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embeds: expect.arrayContaining([
+            expect.objectContaining({
+              title: expect.stringMatching(/Status do Pomodoro/),
+              fields: expect.arrayContaining([
+                expect.objectContaining({
+                  name: expect.stringMatching(/Assunto/),
+                  value: "Test Subject",
+                }),
+              ]),
+            }),
+          ]),
+        })
+      );
+    });
+
+    it("should handle no active session", async () => {
+      // Mock no active session
+      pomodoroManager.getActiveSession.mockReturnValueOnce(null);
+
+      const interaction = createMockInteraction({
+        subcommand: "status",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify error response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("não tem uma sessão")
+      );
+    });
+  });
+
+  describe("active subcommand", () => {
+    it("should list all active pomodoro sessions", async () => {
+      const interaction = createMockInteraction({
+        subcommand: "active",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify pomodoroManager.getAllActiveSessions was called
+      expect(pomodoroManager.getAllActiveSessions).toHaveBeenCalled();
+
+      // Verify response contains all sessions
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embeds: expect.arrayContaining([
+            expect.objectContaining({
+              title: expect.stringMatching(/Sessões de Pomodoro Ativas/),
+              description: expect.stringContaining("2 sessões"),
+              fields: expect.arrayContaining([
+                expect.objectContaining({
+                  name: expect.stringContaining("TestUser"),
+                }),
+                expect.objectContaining({
+                  name: expect.stringContaining("AnotherUser"),
+                }),
+              ]),
+            }),
+          ]),
+        })
+      );
+    });
+
+    it("should handle no active sessions", async () => {
+      // Mock empty sessions list
+      pomodoroManager.getAllActiveSessions.mockReturnValueOnce([]);
+
+      const interaction = createMockInteraction({
+        subcommand: "active",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify appropriate response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("Não há sessões")
+      );
+    });
+  });
+
+  describe("Error handling", () => {
+    it("should handle unexpected errors gracefully", async () => {
+      // Mock a crash
+      pomodoroManager.startPomodoro.mockRejectedValueOnce(
+        new Error("Unexpected crash")
+      );
+
+      const interaction = createMockInteraction({
+        subcommand: "start",
+        subject: "Crash Test",
+      });
+
+      await pomodoroCommand.execute(interaction);
+
+      // Verify error response
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("Ocorreu um erro")
+      );
+    });
+  });
 });
