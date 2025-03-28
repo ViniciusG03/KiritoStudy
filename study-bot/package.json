@@ -1,28 +1,33 @@
 {
-    "name": "study-bot",
-    "version": "1.0.0",
-    "description": "Bot para gerenciamento de estudos no Discord",
-    "main": "index.js",
-    "scripts": {
-        "start": "node index.js",
-        "dev": "nodemon index.js",
-        "deploy": "node deploy-commands.js",
-        "check": "node scripts/check-commands.js",
-        "clean": "node scripts/delete-commands.js"
-    },
-    "engines": {
-        "node": ">=18.x"
-    },
-    "dependencies": {
-        "discord.js": "^14.18.0",
-        "dotenv": "^16.4.7",
-        "mongodb": "^6.15.0",
-        "mongoose": "^6.0.0"
-    },
-    "devDependencies": {
-        "@shelf/jest-mongodb": "^5.1.0",
-        "jest": "^29.7.0",
-        "nodemon": "^2.0.0",
-        "supertest": "^7.1.0"
-    }
+  "name": "study-bot",
+  "version": "1.0.0",
+  "description": "Bot para gerenciamento de estudos no Discord",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "deploy": "node deploy-commands.js",
+    "check": "node scripts/check-commands.js",
+    "clean": "node scripts/delete-commands.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  },
+  "engines": {
+    "node": ">=18.x"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.7",
+    "mongodb": "^6.15.0",
+    "mongoose": "^6.0.0"
+  },
+  "devDependencies": {
+    "@shelf/jest-mongodb": "^5.1.0",
+    "jest": "^29.7.0",
+    "jest-environment-node": "^29.7.0",
+    "jest-mock-extended": "^4.0.0-beta1",
+    "nodemon": "^2.0.0",
+    "supertest": "^7.1.0"
+  }
 }

@@ -918,6 +918,35 @@ class PomodoroManager {
       return 0;
     }
   }
+
+  /**
+   * Método de limpeza específico para testes
+   * @param {boolean} cacheOnly - Se true, limpa apenas o cache sem afetar o banco
+   * @returns {Promise<void>}
+   */
+  async cleanupForTests(cacheOnly = false) {
+    try {
+      // Limpar todos os timers em memória
+      for (const [userId, state] of memoryCache.entries()) {
+        if (state.timer) {
+          clearInterval(state.timer);
+          state.timer = null;
+        }
+      }
+
+      // Limpar o cache em memória
+      memoryCache.clear();
+
+      // Limpar também no banco de dados, se solicitado
+      if (!cacheOnly) {
+        await ActiveSession.deleteMany({ sessionType: "pomodoro" });
+      }
+
+      console.log("Limpeza de sessões para testes concluída");
+    } catch (error) {
+      console.error("Erro durante limpeza para testes:", error);
+    }
+  }
 }
 
 // Exportar uma instância única

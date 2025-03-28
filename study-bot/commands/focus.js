@@ -762,6 +762,35 @@ module.exports = {
   },
 
   /**
+   * Método de limpeza específico para testes
+   * @param {boolean} cacheOnly - Se true, limpa apenas o cache sem afetar o banco
+   * @returns {Promise<void>}
+   */
+  async cleanupForTests(cacheOnly = false) {
+    try {
+      // Limpar todos os timers em memória
+      for (const [userId, state] of focusCache.entries()) {
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+      }
+
+      // Limpar o cache em memória
+      focusCache.clear();
+
+      // Limpar também no banco de dados, se solicitado
+      if (!cacheOnly) {
+        await ActiveSession.deleteMany({ sessionType: "focus" });
+      }
+
+      console.log("Limpeza de sessões de foco para testes concluída");
+    } catch (error) {
+      console.error("Erro durante limpeza de foco para testes:", error);
+    }
+  },
+
+  /**
    * Limpa sessões órfãs ou expiradas do banco de dados
    * @returns {Promise<number>} Número de sessões removidas
    */
