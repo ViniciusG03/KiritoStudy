@@ -17,14 +17,16 @@ class PomodoroManager {
    * Inicia uma nova sessão de pomodoro
    * @param {string} userId - ID do usuário no Discord
    * @param {string} username - Nome do usuário
-   * @param {object} channel - Canal para enviar notificações
-   * @param {string} subject - Assunto de estudo (opcional)
+   * @param {object} serverChannel - Canal do servidor onde o comando foi executado
+   * @param {object} dmChannel - Canal de DM para enviar notificações
+   * @param {string} subject - Assunto de estudo
    * @param {string} goalId - ID da meta associada (opcional)
    */
   async startPomodoro(
     userId,
     username,
-    channel,
+    serverChannel,
+    dmChannel,
     subject = "Geral",
     goalId = null
   ) {
@@ -60,8 +62,8 @@ class PomodoroManager {
       sessionId: session._id,
       userId: userId,
       username: username,
-      serverChannel: serverChannel, // Onde o comando foi executado
-      dmChannel: dmChannel,
+      serverChannel: serverChannel, // Canal onde o comando foi executado
+      dmChannel: dmChannel, // Canal de DM para notificações
       subject: subject,
       goalId: goalId,
       currentCycle: 1,
@@ -70,7 +72,7 @@ class PomodoroManager {
       timer: null,
       startTime: new Date(),
       endTime: null,
-      timeLeft: this.pomodoro.workTime / 1000, // Convertendo para segundos para exibição
+      timeLeft: this.pomodoro.workTime / 60000, // Convertendo para minutos para exibição
       paused: false,
     };
 
@@ -102,7 +104,22 @@ class PomodoroManager {
         text: "Use /pomodoro pause para pausar e /pomodoro stop para encerrar",
       });
 
-    await dmChannel.send({ embeds: [embed] });
+    try {
+      await dmChannel.send({ embeds: [embed] });
+    } catch (error) {
+      console.error("Erro ao enviar mensagem para DM:", error);
+      // Tentar enviar no canal do servidor como fallback
+      try {
+        await serverChannel.send({
+          content: `${username}, não foi possível enviar mensagens por DM. Verifique suas configurações de privacidade.`,
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error("Erro ao enviar mensagem de fallback:", err);
+      }
+
+      // Mesmo com erro de DM, permitimos que a sessão continue
+    }
 
     return {
       success: true,
@@ -130,7 +147,7 @@ class PomodoroManager {
         break;
     }
 
-    state.timeLeft = duration / 1000; // Convertendo para segundos para facilitar a exibição
+    state.timeLeft = duration / 60000; // Convertendo para minutos para facilitar a exibição
 
     // Limpar timer anterior se existir
     if (state.timer) {
@@ -141,7 +158,7 @@ class PomodoroManager {
     const startTime = Date.now();
     state.timer = setInterval(async () => {
       const elapsed = Date.now() - startTime;
-      state.timeLeft = Math.max(0, duration - elapsed) / 1000;
+      state.timeLeft = Math.max(0, (duration - elapsed) / 60000);
 
       // Verificar se o timer acabou
       if (state.timeLeft <= 0) {
@@ -156,130 +173,157 @@ class PomodoroManager {
    * @param {object} state - Estado do pomodoro
    */
   async _handleTimerEnd(state) {
-    switch (state.status) {
-      case "work":
-        // Incrementar pomodoros completos
-        state.pomodorosCompleted += 1;
+    try {
+      switch (state.status) {
+        case "work":
+          // Incrementar pomodoros completos
+          state.pomodorosCompleted += 1;
 
-        // Atualizar sessão de estudo
-        await StudySession.findByIdAndUpdate(state.sessionId, {
-          pomodorosCompleted: state.pomodorosCompleted,
-        });
+          // Atualizar sessão de estudo
+          await StudySession.findByIdAndUpdate(state.sessionId, {
+            pomodorosCompleted: state.pomodorosCompleted,
+          });
 
-        // Atualizar usuário
-        const user = await User.findOne({ discordId: state.userId });
-        user.completedPomodoros += 1;
+          // Atualizar usuário
+          const user = await User.findOne({ discordId: state.userId });
+          user.completedPomodoros += 1;
 
-        // Adicionar tempo à meta se existir
-        if (state.goalId) {
-          const goal = await Goal.findById(state.goalId);
-          if (goal) {
-            const workTimeMinutes = this.pomodoro.workTime / 60000;
-            const goalCompleted = goal.addTime(workTimeMinutes);
-            await goal.save();
+          // Adicionar tempo à meta se existir
+          if (state.goalId) {
+            const goal = await Goal.findById(state.goalId);
+            if (goal) {
+              const workTimeMinutes = this.pomodoro.workTime / 60000;
+              const goalCompleted = goal.addTime(workTimeMinutes);
+              await goal.save();
 
-            // Se a meta foi completada, dar XP extra
-            if (goalCompleted) {
-              await user.addXP(config.levels.goalCompletionXP, config.levels);
+              // Se a meta foi completada, dar XP extra
+              if (goalCompleted) {
+                await user.addXP(config.levels.goalCompletionXP, config.levels);
 
-              // Notificar sobre a conclusão da meta
-              const goalEmbed = new EmbedBuilder()
-                .setTitle("🎯 Meta Concluída!")
-                .setDescription(
-                  `Parabéns! Você concluiu a meta: **${goal.title}**`
-                )
-                .setColor("#32CD32");
+                // Notificar sobre a conclusão da meta
+                const goalEmbed = new EmbedBuilder()
+                  .setTitle("🎯 Meta Concluída!")
+                  .setDescription(
+                    `Parabéns! Você concluiu a meta: **${goal.title}**`
+                  )
+                  .setColor("#32CD32");
 
-              await state.dmChannel.send({ embeds: [goalEmbed] });
+                await this._safelySendDM(state.dmChannel, {
+                  embeds: [goalEmbed],
+                });
+              }
             }
           }
-        }
 
-        // Dar XP pelo pomodoro completo
-        await user.addXP(config.levels.studySessionXP / 2, config.levels);
-        await user.save();
+          // Dar XP pelo pomodoro completo
+          await user.addXP(config.levels.studySessionXP / 2, config.levels);
+          await user.save();
 
-        // Verificar se é hora de uma pausa longa
-        if (state.pomodorosCompleted % this.pomodoro.longBreakInterval === 0) {
-          state.status = "longBreak";
+          // Verificar se é hora de uma pausa longa
+          if (
+            state.pomodorosCompleted % this.pomodoro.longBreakInterval ===
+            0
+          ) {
+            state.status = "longBreak";
+
+            const embed = new EmbedBuilder()
+              .setTitle("🍵 Hora da Pausa Longa!")
+              .setDescription(
+                `Você completou ${
+                  state.pomodorosCompleted
+                } pomodoros! Tire um descanso de ${
+                  this.pomodoro.longBreak / 60000
+                } minutos.`
+              )
+              .setColor("#4169E1")
+              .addFields(
+                {
+                  name: "Pomodoros Completos",
+                  value: `${state.pomodorosCompleted}`,
+                  inline: true,
+                },
+                { name: "Status", value: "Pausa Longa 🧘", inline: true }
+              );
+
+            await this._safelySendDM(state.dmChannel, { embeds: [embed] });
+          } else {
+            state.status = "shortBreak";
+
+            const embed = new EmbedBuilder()
+              .setTitle("☕ Hora da Pausa!")
+              .setDescription(
+                `Bom trabalho! Tire um descanso de ${
+                  this.pomodoro.shortBreak / 60000
+                } minutos.`
+              )
+              .setColor("#20B2AA")
+              .addFields(
+                {
+                  name: "Pomodoros Completos",
+                  value: `${state.pomodorosCompleted}`,
+                  inline: true,
+                },
+                { name: "Status", value: "Pausa Curta ☕", inline: true }
+              );
+
+            await this._safelySendDM(state.dmChannel, { embeds: [embed] });
+          }
+          break;
+
+        case "shortBreak":
+        case "longBreak":
+          state.status = "work";
+          state.currentCycle += 1;
 
           const embed = new EmbedBuilder()
-            .setTitle("🍵 Hora da Pausa Longa!")
+            .setTitle("🍅 De Volta ao Trabalho!")
             .setDescription(
-              `Você completou ${
-                state.pomodorosCompleted
-              } pomodoros! Tire um descanso de ${
-                this.pomodoro.longBreak / 60000
+              `Pausa concluída! Hora de focar por mais ${
+                this.pomodoro.workTime / 60000
               } minutos.`
             )
-            .setColor("#4169E1")
+            .setColor("#FF6347")
             .addFields(
+              {
+                name: "Ciclo atual",
+                value: `${state.currentCycle}/${this.pomodoro.longBreakInterval}`,
+                inline: true,
+              },
+              { name: "Status", value: "Trabalhando 💪", inline: true },
               {
                 name: "Pomodoros Completos",
                 value: `${state.pomodorosCompleted}`,
                 inline: true,
-              },
-              { name: "Status", value: "Pausa Longa 🧘", inline: true }
+              }
             );
 
-          await state.dmChannel.send({ embeds: [embed] });
-        } else {
-          state.status = "shortBreak";
+          await this._safelySendDM(state.dmChannel, { embeds: [embed] });
+          break;
+      }
 
-          const embed = new EmbedBuilder()
-            .setTitle("☕ Hora da Pausa!")
-            .setDescription(
-              `Bom trabalho! Tire um descanso de ${
-                this.pomodoro.shortBreak / 60000
-              } minutos.`
-            )
-            .setColor("#20B2AA")
-            .addFields(
-              {
-                name: "Pomodoros Completos",
-                value: `${state.pomodorosCompleted}`,
-                inline: true,
-              },
-              { name: "Status", value: "Pausa Curta ☕", inline: true }
-            );
-
-          await state.dmChannel.send({ embeds: [embed] });
-        }
-        break;
-
-      case "shortBreak":
-      case "longBreak":
-        state.status = "work";
-        state.currentCycle += 1;
-
-        const embed = new EmbedBuilder()
-          .setTitle("🍅 De Volta ao Trabalho!")
-          .setDescription(
-            `Pausa concluída! Hora de focar por mais ${
-              this.pomodoro.workTime / 60000
-            } minutos.`
-          )
-          .setColor("#FF6347")
-          .addFields(
-            {
-              name: "Ciclo atual",
-              value: `${state.currentCycle}/${this.pomodoro.longBreakInterval}`,
-              inline: true,
-            },
-            { name: "Status", value: "Trabalhando 💪", inline: true },
-            {
-              name: "Pomodoros Completos",
-              value: `${state.pomodorosCompleted}`,
-              inline: true,
-            }
-          );
-
-        await state.dmChannel.send({ embeds: [embed] });
-        break;
+      // Iniciar próximo timer
+      this._startTimer(state);
+    } catch (error) {
+      console.error("Erro ao processar fim de timer:", error);
+      // Tentar continuar mesmo com erro
+      this._startTimer(state);
     }
+  }
 
-    // Iniciar próximo timer
-    this._startTimer(state);
+  /**
+   * Método auxiliar para enviar mensagens para DM com segurança
+   * @param {object} channel - Canal para enviar a mensagem
+   * @param {object} messageOptions - Opções da mensagem
+   */
+  async _safelySendDM(channel, messageOptions) {
+    try {
+      if (channel) {
+        await channel.send(messageOptions);
+      }
+    } catch (error) {
+      console.error("Erro ao enviar mensagem para DM:", error);
+      // Silenciosamente falha, não queremos que o pomodoro pare por causa de erros de DM
+    }
   }
 
   /**
@@ -316,7 +360,7 @@ class PomodoroManager {
       .addFields(
         {
           name: "Tempo Restante",
-          value: `${Math.ceil(session.timeLeft / 60)} minutos`,
+          value: `${Math.ceil(session.timeLeft)} minutos`,
           inline: true,
         },
         {
@@ -329,7 +373,7 @@ class PomodoroManager {
         }
       );
 
-    await session.dmChannel.send({ embeds: [embed] });
+    await this._safelySendDM(session.dmChannel, { embeds: [embed] });
 
     return {
       success: true,
@@ -361,11 +405,11 @@ class PomodoroManager {
     session.paused = false;
 
     // Continuar o timer de onde parou
-    const remainingTime = session.timeLeft * 1000; // Converter de volta para ms
+    const remainingTime = session.timeLeft * 60000; // Converter para ms
     const startTime = Date.now();
     session.timer = setInterval(async () => {
       const elapsed = Date.now() - startTime;
-      session.timeLeft = Math.max(0, (remainingTime - elapsed) / 1000);
+      session.timeLeft = Math.max(0, (remainingTime - elapsed) / 60000);
 
       if (session.timeLeft <= 0) {
         clearInterval(session.timer);
@@ -380,7 +424,7 @@ class PomodoroManager {
       .addFields(
         {
           name: "Tempo Restante",
-          value: `${Math.ceil(session.timeLeft / 60)} minutos`,
+          value: `${Math.ceil(session.timeLeft)} minutos`,
           inline: true,
         },
         {
@@ -390,7 +434,7 @@ class PomodoroManager {
         }
       );
 
-    await session.dmChannel.send({ embeds: [embed] });
+    await this._safelySendDM(session.dmChannel, { embeds: [embed] });
 
     return {
       success: true,
@@ -499,7 +543,9 @@ class PomodoroManager {
           });
         }
 
-        await session.dmChannel.send({ embeds: [completionEmbed] });
+        await this._safelySendDM(session.dmChannel, {
+          embeds: [completionEmbed],
+        });
 
         // Remover da lista de sessões ativas
         activeSessions.delete(userId);
@@ -521,6 +567,9 @@ class PomodoroManager {
         success: false,
         message: "Ocorreu um erro ao encerrar a sessão de pomodoro.",
       };
+    } finally {
+      // Garantir que o usuário seja removido da lista mesmo se houver erros
+      activeSessions.delete(userId);
     }
   }
 
@@ -534,7 +583,7 @@ class PomodoroManager {
     if (!session) return null;
 
     // Calcular minutos restantes para exibição
-    const timeLeftMinutes = Math.ceil(session.timeLeft / 60);
+    const timeLeftMinutes = Math.ceil(session.timeLeft);
 
     return {
       userId: session.userId,
@@ -564,7 +613,7 @@ class PomodoroManager {
         status: session.status,
         pomodorosCompleted: session.pomodorosCompleted,
         paused: session.paused,
-        started: session.serverChannel.type === 1 ? "DM" : "Servidor",
+        started: session.serverChannel?.type === 1 ? "DM" : "Servidor",
       });
     });
 

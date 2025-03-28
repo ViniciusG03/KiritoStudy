@@ -53,12 +53,14 @@ module.exports = {
     ),
 
   async execute(interaction) {
-    await interaction.deferReply();
+    // Defer the reply immediately to prevent "Unknown interaction" errors
+    await interaction.deferReply({ ephemeral: true });
 
     const subcommand = interaction.options.getSubcommand();
     const userId = interaction.user.id;
     const username = interaction.user.username;
 
+    // Create DM channel for sending notifications
     let dmChannel;
     try {
       dmChannel = await interaction.user.createDM();
@@ -70,158 +72,176 @@ module.exports = {
       return;
     }
 
-    switch (subcommand) {
-      case "start":
-        const subject = interaction.options.getString("subject");
-        const goalOption = interaction.options.getString("goal");
+    try {
+      switch (subcommand) {
+        case "start":
+          const subject = interaction.options.getString("subject");
+          const goalOption = interaction.options.getString("goal");
 
-        let goalId = null;
+          let goalId = null;
 
-        // Se uma meta foi especificada, encontre-a
-        if (goalOption) {
-          try {
-            // Tentar encontrar pelo ID primeiro
-            let goal = await Goal.findById(goalOption);
+          // Se uma meta foi especificada, encontre-a
+          if (goalOption) {
+            try {
+              // Tentar encontrar pelo ID primeiro
+              let goal = await Goal.findById(goalOption);
 
-            // Se não encontrar pelo ID, tenta pelo título
-            if (!goal) {
-              goal = await Goal.findOne({
-                userId: userId,
-                title: { $regex: new RegExp(goalOption, "i") },
-                completed: false,
-              });
+              // Se não encontrar pelo ID, tenta pelo título
+              if (!goal) {
+                goal = await Goal.findOne({
+                  userId: userId,
+                  title: { $regex: new RegExp(goalOption, "i") },
+                  completed: false,
+                });
+              }
+
+              if (goal) {
+                goalId = goal._id;
+              } else {
+                await interaction.editReply(
+                  `⚠️ Meta não encontrada. Criando sessão sem meta associada.`
+                );
+              }
+            } catch (error) {
+              console.error("Erro ao buscar meta:", error);
             }
-
-            if (goal) {
-              goalId = goal._id;
-            } else {
-              await interaction.editReply(
-                `⚠️ Meta não encontrada. Criando sessão sem meta associada.`
-              );
-            }
-          } catch (error) {
-            console.error("Erro ao buscar meta:", error);
           }
-        }
 
-        const result = await pomodoroManager.startPomodoro(
-          userId,
-          username,
-          interaction.channel,
-          dmChannel,
-          subject,
-          goalId
-        );
+          // Passar os parâmetros na ordem correta
+          const result = await pomodoroManager.startPomodoro(
+            userId,
+            username,
+            interaction.channel,
+            dmChannel,
+            subject,
+            goalId
+          );
 
-        if (result.success) {
+          if (result.success) {
+            await interaction.editReply(
+              `✅ ${result.message} Verifique suas mensagens privadas para atualizações.`
+            );
+          } else {
+            await interaction.editReply(`❌ ${result.message}`);
+          }
+          break;
+
+        case "pause":
+          const pauseResult = await pomodoroManager.pausePomodoro(userId);
           await interaction.editReply(
-            `✅ ${result.message} Verifique suas mensagens privadas para atualizações.`
+            pauseResult.success
+              ? `⏸️ ${pauseResult.message}`
+              : `❌ ${pauseResult.message}`
           );
-        } else {
-          await interaction.editReply(`❌ ${result.message}`);
-        }
-        break;
+          break;
 
-      case "pause":
-        const pauseResult = await pomodoroManager.pausePomodoro(userId);
-        await interaction.editReply(
-          pauseResult.success
-            ? `⏸️ ${pauseResult.message}`
-            : `❌ ${pauseResult.message}`
-        );
-        break;
-
-      case "resume":
-        const resumeResult = await pomodoroManager.resumePomodoro(userId);
-        await interaction.editReply(
-          resumeResult.success
-            ? `▶️ ${resumeResult.message}`
-            : `❌ ${resumeResult.message}`
-        );
-        break;
-
-      case "stop":
-        const stopResult = await pomodoroManager.stopPomodoro(userId);
-        await interaction.editReply(
-          stopResult.success
-            ? `✅ ${stopResult.message}`
-            : `❌ ${stopResult.message}`
-        );
-        break;
-
-      case "status":
-        const session = pomodoroManager.getActiveSession(userId);
-
-        if (!session) {
+        case "resume":
+          const resumeResult = await pomodoroManager.resumePomodoro(userId);
           await interaction.editReply(
-            "❌ Você não tem uma sessão de Pomodoro ativa!"
+            resumeResult.success
+              ? `▶️ ${resumeResult.message}`
+              : `❌ ${resumeResult.message}`
           );
-          return;
-        }
+          break;
 
-        const statusEmbed = new EmbedBuilder()
-          .setTitle("🍅 Status do Pomodoro")
-          .setDescription(`Informações sobre sua sessão atual:`)
-          .setColor("#3498db")
-          .addFields(
-            { name: "Assunto", value: session.subject, inline: true },
-            {
-              name: "Status",
-              value: session.paused
-                ? "Pausado ⏸️"
-                : session.status === "work"
-                ? "Trabalhando 💪"
-                : "Em Pausa 🧘",
-              inline: true,
-            },
-            {
-              name: "Pomodoros Completos",
-              value: `${session.pomodorosCompleted}`,
-              inline: true,
-            },
-            {
-              name: "Tempo Restante",
-              value: `${session.timeLeft} minutos`,
-              inline: true,
-            },
-            {
-              name: "Iniciado em",
-              value: `<t:${Math.floor(session.startTime.getTime() / 1000)}:R>`,
-              inline: true,
-            }
-          );
-
-        await interaction.editReply({ embeds: [statusEmbed] });
-        break;
-
-      case "active":
-        const activeSessions = pomodoroManager.getAllActiveSessions();
-
-        if (activeSessions.length === 0) {
+        case "stop":
+          const stopResult = await pomodoroManager.stopPomodoro(userId);
           await interaction.editReply(
-            "📊 Não há sessões de Pomodoro ativas no momento."
+            stopResult.success
+              ? `✅ ${stopResult.message}`
+              : `❌ ${stopResult.message}`
           );
-          return;
-        }
+          break;
 
-        const activeEmbed = new EmbedBuilder()
-          .setTitle("📊 Sessões de Pomodoro Ativas")
-          .setDescription(
-            `Há ${activeSessions.length} sessões ativas no momento:`
-          )
-          .setColor("#9b59b6");
+        case "status":
+          const session = pomodoroManager.getActiveSession(userId);
 
-        activeSessions.forEach((session, index) => {
-          activeEmbed.addFields({
-            name: `${index + 1}. ${session.username}`,
-            value: `📚 **Assunto:** ${session.subject}\n🔄 **Status:** ${
-              session.status === "work" ? "Trabalhando" : "Em Pausa"
-            }\n🍅 **Pomodoros:** ${session.pomodorosCompleted}`,
+          if (!session) {
+            await interaction.editReply(
+              "❌ Você não tem uma sessão de Pomodoro ativa!"
+            );
+            return;
+          }
+
+          const statusEmbed = new EmbedBuilder()
+            .setTitle("🍅 Status do Pomodoro")
+            .setDescription(`Informações sobre sua sessão atual:`)
+            .setColor("#3498db")
+            .addFields(
+              { name: "Assunto", value: session.subject, inline: true },
+              {
+                name: "Status",
+                value: session.paused
+                  ? "Pausado ⏸️"
+                  : session.status === "work"
+                  ? "Trabalhando 💪"
+                  : "Em Pausa 🧘",
+                inline: true,
+              },
+              {
+                name: "Pomodoros Completos",
+                value: `${session.pomodorosCompleted}`,
+                inline: true,
+              },
+              {
+                name: "Tempo Restante",
+                value: `${session.timeLeft} minutos`,
+                inline: true,
+              },
+              {
+                name: "Iniciado em",
+                value: `<t:${Math.floor(
+                  session.startTime.getTime() / 1000
+                )}:R>`,
+                inline: true,
+              }
+            );
+
+          await interaction.editReply({ embeds: [statusEmbed] });
+          break;
+
+        case "active":
+          const activeSessions = pomodoroManager.getAllActiveSessions();
+
+          if (activeSessions.length === 0) {
+            await interaction.editReply(
+              "📊 Não há sessões de Pomodoro ativas no momento."
+            );
+            return;
+          }
+
+          const activeEmbed = new EmbedBuilder()
+            .setTitle("📊 Sessões de Pomodoro Ativas")
+            .setDescription(
+              `Há ${activeSessions.length} sessões ativas no momento:`
+            )
+            .setColor("#9b59b6");
+
+          activeSessions.forEach((session, index) => {
+            activeEmbed.addFields({
+              name: `${index + 1}. ${session.username}`,
+              value: `📚 **Assunto:** ${session.subject}\n🔄 **Status:** ${
+                session.status === "work" ? "Trabalhando" : "Em Pausa"
+              }\n🍅 **Pomodoros:** ${session.pomodorosCompleted}`,
+            });
           });
-        });
 
-        await interaction.editReply({ embeds: [activeEmbed] });
-        break;
+          await interaction.editReply({ embeds: [activeEmbed] });
+          break;
+      }
+    } catch (error) {
+      console.error(
+        `Erro ao executar comando pomodoro (${subcommand}):`,
+        error
+      );
+
+      try {
+        await interaction.editReply(
+          "❌ Ocorreu um erro ao processar seu comando. Por favor, tente novamente mais tarde."
+        );
+      } catch (followUpError) {
+        console.error("Erro ao responder após erro:", followUpError);
+      }
     }
   },
 };
